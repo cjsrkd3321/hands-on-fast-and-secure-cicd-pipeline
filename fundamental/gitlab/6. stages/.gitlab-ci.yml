@@ -1,0 +1,22 @@
+stages:
+  - .pre
+  - build
+  - test
+  - deploy
+  - my_stage
+  - .post
+
+default:
+  image:
+    name: zricethezav/gitleaks:latest
+    entrypoint: [""]
+    
+build:
+  stage: build
+  script:
+    - echo "asdf"
+
+my_stage:
+  stage: my_stage
+  script:
+    - echo "asdf"

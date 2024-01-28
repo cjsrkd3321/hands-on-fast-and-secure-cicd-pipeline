@@ -1,0 +1,25 @@
+default:
+  image:
+    name: zricethezav/gitleaks:latest
+    entrypoint: [""]
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://gitlab.com
+
+.anchor: &anchor
+  - ls > ls.txt
+
+.after_script: &after_script
+  after_script:
+    - echo "after_script"
+
+anchors and artifacts:
+  before_script:
+    - *anchor
+  script:
+    - echo ${GITLAB_OIDC_TOKEN} > jwt.txt
+  <<: *after_script
+  artifacts:
+    paths:
+      - jwt.txt
+      - ls.txt

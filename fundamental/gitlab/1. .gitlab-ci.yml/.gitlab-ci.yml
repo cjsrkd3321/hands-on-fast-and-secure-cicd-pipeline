@@ -1,0 +1,17 @@
+default:
+  image:
+    name: zricethezav/gitleaks:latest
+    entrypoint: [""]
+    
+first:
+  script:
+    - ls
+    - env
+
+second:
+  script:
+    - exit 0
+
+third:
+  script:
+    - exit 1

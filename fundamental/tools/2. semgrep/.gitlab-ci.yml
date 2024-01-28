@@ -1,0 +1,21 @@
+stages:
+  - test
+
+semgrep:
+  stage: test
+  image: returntocorp/semgrep
+  variables:
+    SEMGREP_FORCE_COLOR: "true"
+  script: 
+    - semgrep scan --quiet --gitlab-sast ./ > gl-sast-report.json || true
+    - semgrep scan --severity=ERROR --quiet --error ./
+  artifacts:
+    reports:
+      sast: gl-sast-report.json
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: 
+        paths:
+          - app.py
+          - Dockerfile
+          - requirements.txt

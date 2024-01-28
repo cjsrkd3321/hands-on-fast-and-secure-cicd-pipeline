@@ -1,0 +1,33 @@
+stages:
+  - test
+
+trivy:
+  stage: test
+  services:
+    - name: docker:dind
+  before_script:
+    - *get_ecr_token
+    - export TRIVY_VERSION=$(wget -qO - "https://api.github.com/repos/aquasecurity/trivy/releases/latest" | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+    - wget --no-verbose https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz -O - | tar -zxvf -
+    - apk update && apk add jq
+  script:
+    - ./trivy image --download-db-only --no-progress --cache-dir .trivycache/
+    - ./trivy image --exit-code 0 --cache-dir .trivycache/ --no-progress --format template --template "@contrib/gitlab-codequality.tpl" -o gl-codequality-image.json ${REMOTE_LATEST_IMAGE}
+    - ./trivy filesystem --scanners misconfig,vuln --exit-code 0 --cache-dir .trivycache/ --no-progress --format template --template "@contrib/gitlab-codequality.tpl" -o gl-codequality-fs.json .
+    - jq -s 'add' gl-codequality-image.json gl-codequality-fs.json > gl-codequality.json
+    - ./trivy image --exit-code 1 --cache-dir .trivycache/ --severity CRITICAL --no-progress ${REMOTE_LATEST_IMAGE}
+  cache:
+    paths:
+      - .trivycache/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: 
+        paths:
+          - app.py
+          - Dockerfile
+          - requirements.txt
+  artifacts:
+    paths:
+      - gl-codequality.json
+    reports:
+      codequality: gl-codequality.json

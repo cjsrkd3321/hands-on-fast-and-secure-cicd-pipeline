@@ -1,0 +1,17 @@
+stages:
+  - gitleaks
+
+gitleaks:
+  stage: gitleaks
+  image:
+    name: zricethezav/gitleaks:latest
+    entrypoint: [""]
+  script:
+    - gitleaks detect -v --no-git --redact
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: 
+        paths:
+          - app.py
+          - Dockerfile
+          - requirements.txt

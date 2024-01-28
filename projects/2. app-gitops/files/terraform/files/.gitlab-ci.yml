@@ -1,0 +1,228 @@
+stages:
+  - gitleaks
+  - build
+  - test
+  - sign
+  - verify
+  - deploy
+
+default:
+  image:
+    name: bentolor/docker-dind-awscli
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://gitlab.com
+
+variables:
+  AWS_DEFAULT_REGION: ap-northeast-2
+  IMAGE: ${CI_PROJECT_NAME}:latest
+  REMOTE_LATEST_IMAGE: ${AWS_ECR_REPO_URL}:latest
+  REMOTE_REGULAR_IMAGE: ${AWS_ECR_REPO_URL}:${CI_COMMIT_SHORT_SHA}
+
+.get_aws_role: &get_aws_role
+  - >
+    export $(printf "AWS_ACCESS_KEY_ID=%s AWS_SECRET_ACCESS_KEY=%s AWS_SESSION_TOKEN=%s"
+    $(aws sts assume-role-with-web-identity
+    --role-arn ${AWS_ROLE_ARN}
+    --role-session-name "GitLabRunner-${CI_PROJECT_ID}-${CI_PIPELINE_ID}"
+    --web-identity-token ${GITLAB_OIDC_TOKEN}
+    --duration-seconds 3600
+    --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]'
+    --output text))
+
+.get_ecr_token: &get_ecr_token
+  - *get_aws_role
+  - aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS --password-stdin ${AWS_ECR_REPO_URL}
+
+gitleaks:
+  stage: gitleaks
+  image:
+    name: zricethezav/gitleaks:latest
+    entrypoint: [""]
+  script:
+    - gitleaks detect -v --no-git --redact --report-format json
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: 
+        paths:
+          - app.py
+          - Dockerfile
+          - requirements.txt
+
+build-container-image:
+  stage: build
+  services:
+    - name: docker:dind
+  before_script:
+    - *get_aws_role
+    - *get_ecr_token
+  script:
+    - docker build -t ${IMAGE} .
+    - docker tag ${IMAGE} ${REMOTE_LATEST_IMAGE}
+    - docker push ${REMOTE_LATEST_IMAGE}
+    - docker tag ${IMAGE} ${REMOTE_REGULAR_IMAGE}
+    - docker push ${REMOTE_REGULAR_IMAGE}
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: 
+        paths:
+          - app.py
+          - Dockerfile
+          - requirements.txt
+
+semgrep:
+  stage: test
+  image: returntocorp/semgrep
+  variables:
+    SEMGREP_FORCE_COLOR: "true"
+  script: 
+    - semgrep scan --quiet --gitlab-sast ./ > gl-sast-report.json || true
+    - semgrep scan --severity=ERROR --quiet --error ./
+  artifacts:
+    reports:
+      sast: gl-sast-report.json
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: 
+        paths:
+          - app.py
+          - Dockerfile
+          - requirements.txt
+
+trivy:
+  stage: test
+  services:
+    - name: docker:dind
+  before_script:
+    - *get_ecr_token
+    - export TRIVY_VERSION=$(wget -qO - "https://api.github.com/repos/aquasecurity/trivy/releases/latest" | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+    - wget --no-verbose https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz -O - | tar -zxvf -
+    - apk update && apk add jq
+  script:
+    - ./trivy image --download-db-only --no-progress --cache-dir .trivycache/
+    - ./trivy image --exit-code 0 --cache-dir .trivycache/ --no-progress --format template --template "@contrib/gitlab-codequality.tpl" -o gl-codequality-image.json ${REMOTE_LATEST_IMAGE}
+    - ./trivy filesystem --scanners misconfig,vuln --exit-code 0 --cache-dir .trivycache/ --no-progress --format template --template "@contrib/gitlab-codequality.tpl" -o gl-codequality-fs.json .
+    - jq -s 'add' gl-codequality-image.json gl-codequality-fs.json > gl-codequality.json
+    - ./trivy image --exit-code 1 --cache-dir .trivycache/ --severity CRITICAL --no-progress ${REMOTE_LATEST_IMAGE}
+  cache:
+    paths:
+      - .trivycache/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: 
+        paths:
+          - app.py
+          - Dockerfile
+          - requirements.txt
+  artifacts:
+    paths:
+      - gl-codequality.json
+    reports:
+      codequality: gl-codequality.json
+
+nuclei:
+  stage: test
+  services:
+    - name: docker:dind
+  before_script:
+    - *get_ecr_token
+    - export NUCLEI_VERSION=$(wget -qO - "https://api.github.com/repos/projectdiscovery/nuclei/releases/latest" | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+    - wget --no-verbose https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION}_linux_amd64.zip -O nuclei.zip && unzip -o nuclei.zip && rm -rf nuclei.zip
+  script:
+    - docker run --name ${CI_PROJECT_NAME} -d -p 8080:8080 ${REMOTE_LATEST_IMAGE}
+    - while true; do wget --spider --timeout=1 --tries=1 http://docker:8080 >/dev/null 2>&1 && break; done
+    - ./nuclei -l urls.txt --severity critical -ud .nuclei-templates/ -as -ni
+  cache:
+    paths:
+      - .nuclei-templates/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: 
+        paths:
+          - app.py
+          - Dockerfile
+          - requirements.txt
+          - urls.txt
+
+sign-container-image:
+  stage: sign
+  services:
+    - name: docker:dind
+  before_script:
+    - *get_ecr_token
+    - apk update && apk add jq
+    - export IMAGE_DIGEST=${REMOTE_LATEST_IMAGE}@$(docker buildx imagetools inspect ${REMOTE_LATEST_IMAGE} --format "{{json .Manifest}}" | jq -r .digest)
+    - wget "https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64"
+    - mv cosign-linux-amd64 /usr/local/bin/cosign
+    - chmod +x /usr/local/bin/cosign
+  script:
+    - cosign sign --key awskms:///${AWS_KMS_KEY_ID} ${IMAGE_DIGEST} --tlog-upload=false
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: 
+        paths:
+          - app.py
+          - Dockerfile
+          - requirements.txt
+
+verify-container-image:
+  stage: verify
+  services:
+    - name: docker:dind
+  before_script:
+    - *get_ecr_token
+    - apk update && apk add jq
+    - export IMAGE_DIGEST=${REMOTE_LATEST_IMAGE}@$(docker buildx imagetools inspect ${REMOTE_LATEST_IMAGE} --format "{{json .Manifest}}" | jq -r .digest)
+    - wget "https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64"
+    - mv cosign-linux-amd64 /usr/local/bin/cosign
+    - chmod +x /usr/local/bin/cosign
+  script:
+    - cosign verify --insecure-ignore-tlog --key awskms:///${AWS_KMS_KEY_ID} ${IMAGE_DIGEST}
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes: 
+        paths:
+          - app.py
+          - Dockerfile
+          - requirements.txt
+
+deploy:
+  stage: deploy
+  image: registry.gitlab.com/gitlab-org/cloud-deploy/aws-base:latest
+  before_script: *get_aws_role
+  variables:
+    AWS_DEFAULT_REGION: ap-northeast-1
+  script:
+    - |
+      export SERVICE_NAME="${CI_PROJECT_NAME}-service"
+      export AR_SERVICE_NAME=$(aws apprunner list-services --query "ServiceSummaryList[?ServiceName=='${SERVICE_NAME}'].ServiceName | [0]" --output text)
+
+      if [ ${AR_SERVICE_NAME} != ${SERVICE_NAME} ]; then
+          export AR_SERVICE_ARN=$(aws apprunner create-service --service-name "${SERVICE_NAME}" --source-configuration "{\"AuthenticationConfiguration\": {\"AccessRoleArn\": \"${AWS_APP_RUNNER_SERVICE_ROLE_ARN}\"}, \"ImageRepository\": {\"ImageIdentifier\": \"${REMOTE_LATEST_IMAGE}\", \"ImageRepositoryType\": \"ECR\"}}" --instance-configuration 'Cpu="0.25 vCPU",Memory="0.5 GB"' --output text --query "Service.ServiceArn")
+          echo "[+] Creating ${AR_SERVICE_ARN}"
+      else
+          export AR_SERVICE_ARN=$(aws apprunner list-services --query "ServiceSummaryList[?ServiceName=='${SERVICE_NAME}'].ServiceArn | [0]" --output text)
+          aws apprunner start-deployment --service-arn ${AR_SERVICE_ARN}
+          echo "[+] Deploying ${AR_SERVICE_ARN}"
+      fi
+
+      export AR_SERVICE_STATUS=$(aws apprunner describe-service --service-arn ${AR_SERVICE_ARN} --output text --query "Service.Status")
+      while [ ${AR_SERVICE_STATUS} != "RUNNING" ]; do
+          echo "[*] Waiting..."
+          sleep 10
+
+          export AR_SERVICE_STATUS=$(aws apprunner describe-service --service-arn ${AR_SERVICE_ARN} --output text --query "Service.Status")
+          if [ ${AR_SERVICE_STATUS} = "CREATE_FAILED" ]; then
+              echo "[-] ${AR_SERVICE_ARN} ${AR_SERVICE_STATUS}"
+              exit 1
+          fi
+      done
+
+      echo "[+] ${AR_SERVICE_ARN} deployed!"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes: 
+        paths:
+          - app.py
+          - Dockerfile
+          - requirements.txt

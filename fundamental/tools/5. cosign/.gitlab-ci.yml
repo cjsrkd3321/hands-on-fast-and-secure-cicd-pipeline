@@ -1,0 +1,45 @@
+stages:
+  - sign
+  - verify
+
+sign-container-image:
+  stage: sign
+  services:
+    - name: docker:dind
+  before_script:
+    - *get_ecr_token
+    - apk update && apk add jq
+    - export IMAGE_DIGEST=${REMOTE_LATEST_IMAGE}@$(docker buildx imagetools inspect ${REMOTE_LATEST_IMAGE} --format "{{json .Manifest}}" | jq -r .digest)
+    - wget "https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64"
+    - mv cosign-linux-amd64 /usr/local/bin/cosign
+    - chmod +x /usr/local/bin/cosign
+  script:
+    - cosign sign --key awskms:///${AWS_KMS_KEY_ID} ${IMAGE_DIGEST} --tlog-upload=false
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: 
+        paths:
+          - app.py
+          - Dockerfile
+          - requirements.txt
+
+verify-container-image:
+  stage: verify
+  services:
+    - name: docker:dind
+  before_script:
+    - *get_ecr_token
+    - apk update && apk add jq
+    - export IMAGE_DIGEST=${REMOTE_LATEST_IMAGE}@$(docker buildx imagetools inspect ${REMOTE_LATEST_IMAGE} --format "{{json .Manifest}}" | jq -r .digest)
+    - wget "https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64"
+    - mv cosign-linux-amd64 /usr/local/bin/cosign
+    - chmod +x /usr/local/bin/cosign
+  script:
+    - cosign verify --insecure-ignore-tlog --key awskms:///${AWS_KMS_KEY_ID} ${IMAGE_DIGEST}
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes: 
+        paths:
+          - app.py
+          - Dockerfile
+          - requirements.txt

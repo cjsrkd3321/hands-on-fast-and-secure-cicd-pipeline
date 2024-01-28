@@ -1,0 +1,21 @@
+default:
+  image:
+    name: zricethezav/gitleaks:latest
+    entrypoint: [""]
+  cache:
+    key: readme
+    paths:
+      - README.md
+    
+job1:
+  script:
+    - echo "job1" > README.md
+
+job2:
+  script:
+    - echo "job2" > README.md
+
+job3:
+  script:
+    - cat README.md
+  needs: ["job1", "job2"]

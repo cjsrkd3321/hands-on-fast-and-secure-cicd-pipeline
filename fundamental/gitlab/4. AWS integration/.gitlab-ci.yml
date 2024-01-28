@@ -1,0 +1,24 @@
+default:
+  image: registry.gitlab.com/gitlab-org/cloud-deploy/aws-base:latest
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://gitlab.com
+
+.get_aws_role: &get_aws_role
+  - >
+    export $(printf "AWS_ACCESS_KEY_ID=%s AWS_SECRET_ACCESS_KEY=%s AWS_SESSION_TOKEN=%s"
+    $(aws sts assume-role-with-web-identity
+    --role-arn ${AWS_ROLE_ARN}
+    --role-session-name "GitLabRunner-${CI_PROJECT_ID}-${CI_PIPELINE_ID}"
+    --web-identity-token ${GITLAB_OIDC_TOKEN}
+    --duration-seconds 3600
+    --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]'
+    --output text))
+  - aws sts get-caller-identity
+
+aws:
+  before_script:
+    - *get_aws_role
+  script:
+    - echo ${GITLAB_OIDC_TOKEN}
+    - aws sts get-caller-identity

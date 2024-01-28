@@ -1,0 +1,92 @@
+stages:
+  - build
+  - deploy
+
+default:
+  image:
+    name: bentolor/docker-dind-awscli
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://gitlab.com
+
+variables:
+  AWS_DEFAULT_REGION: ap-northeast-2
+  IMAGE: ${CI_PROJECT_NAME}:latest
+  REMOTE_LATEST_IMAGE: ${AWS_ECR_REPO_URL}:latest
+  REMOTE_REGULAR_IMAGE: ${AWS_ECR_REPO_URL}:${CI_COMMIT_SHORT_SHA}
+
+.get_aws_role: &get_aws_role
+  - >
+    export $(printf "AWS_ACCESS_KEY_ID=%s AWS_SECRET_ACCESS_KEY=%s AWS_SESSION_TOKEN=%s"
+    $(aws sts assume-role-with-web-identity
+    --role-arn ${AWS_ROLE_ARN}
+    --role-session-name "GitLabRunner-${CI_PROJECT_ID}-${CI_PIPELINE_ID}"
+    --web-identity-token ${GITLAB_OIDC_TOKEN}
+    --duration-seconds 3600
+    --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]'
+    --output text))
+
+.get_ecr_token: &get_ecr_token
+  - *get_aws_role
+  - aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS --password-stdin ${AWS_ECR_REPO_URL}
+
+build-container-image:
+  stage: build
+  services:
+    - name: docker:dind
+  before_script:
+    - *get_ecr_token
+  script:
+    - docker build -t ${IMAGE} .
+    - docker tag ${IMAGE} ${REMOTE_LATEST_IMAGE}
+    - docker push ${REMOTE_LATEST_IMAGE}
+    - docker tag ${IMAGE} ${REMOTE_REGULAR_IMAGE}
+    - docker push ${REMOTE_REGULAR_IMAGE}
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: 
+        paths:
+          - app.py
+          - Dockerfile
+          - requirements.txt
+
+deploy:
+  stage: deploy
+  image: registry.gitlab.com/gitlab-org/cloud-deploy/aws-base:latest
+  before_script: *get_aws_role
+  variables:
+    AWS_DEFAULT_REGION: ap-northeast-1
+  script:
+    - |
+      export SERVICE_NAME="${CI_PROJECT_NAME}-service"
+      export AR_SERVICE_NAME=$(aws apprunner list-services --query "ServiceSummaryList[?ServiceName=='${SERVICE_NAME}'].ServiceName | [0]" --output text)
+
+      if [ ${AR_SERVICE_NAME} != ${SERVICE_NAME} ]; then
+          export AR_SERVICE_ARN=$(aws apprunner create-service --service-name "${SERVICE_NAME}" --source-configuration "{\"AuthenticationConfiguration\": {\"AccessRoleArn\": \"${AWS_APP_RUNNER_SERVICE_ROLE_ARN}\"}, \"ImageRepository\": {\"ImageIdentifier\": \"${REMOTE_LATEST_IMAGE}\", \"ImageRepositoryType\": \"ECR\"}}" --instance-configuration 'Cpu="0.25 vCPU",Memory="0.5 GB"' --output text --query "Service.ServiceArn")
+          echo "[+] Creating ${AR_SERVICE_ARN}"
+      else
+          export AR_SERVICE_ARN=$(aws apprunner list-services --query "ServiceSummaryList[?ServiceName=='${SERVICE_NAME}'].ServiceArn | [0]" --output text)
+          aws apprunner start-deployment --service-arn ${AR_SERVICE_ARN}
+          echo "[+] Deploying ${AR_SERVICE_ARN}"
+      fi
+
+      export AR_SERVICE_STATUS=$(aws apprunner describe-service --service-arn ${AR_SERVICE_ARN} --output text --query "Service.Status")
+      while [ ${AR_SERVICE_STATUS} != "RUNNING" ]; do
+          echo "[*] Waiting..."
+          sleep 10
+
+          export AR_SERVICE_STATUS=$(aws apprunner describe-service --service-arn ${AR_SERVICE_ARN} --output text --query "Service.Status")
+          if [ ${AR_SERVICE_STATUS} = "CREATE_FAILED" ]; then
+              echo "[-] ${AR_SERVICE_ARN} ${AR_SERVICE_STATUS}"
+              exit 1
+          fi
+      done
+
+      echo "[+] ${AR_SERVICE_ARN} deployed!"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes: 
+        paths:
+          - app.py
+          - Dockerfile
+          - requirements.txt

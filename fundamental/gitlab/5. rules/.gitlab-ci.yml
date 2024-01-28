@@ -1,0 +1,27 @@
+# https://docs.gitlab.com/ee/ci/variables/predefined_variables.html
+default:
+  image:
+    name: zricethezav/gitleaks:latest
+    entrypoint: [""]
+
+push to the main branch:
+  script:
+    - echo "Push to the main branch."
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+merge request:
+  script:
+    - echo "Merge request"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+when never:
+  script:
+    - echo "When never"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        paths:
+          - Dockerfile
+      when: never

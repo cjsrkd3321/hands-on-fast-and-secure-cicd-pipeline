@@ -1,0 +1,26 @@
+stages:
+  - test
+
+nuclei:
+  stage: test
+  services:
+    - name: docker:dind
+  before_script:
+    - *get_ecr_token
+    - export NUCLEI_VERSION=$(wget -qO - "https://api.github.com/repos/projectdiscovery/nuclei/releases/latest" | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+    - wget --no-verbose https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION}_linux_amd64.zip -O nuclei.zip && unzip -o nuclei.zip && rm -rf nuclei.zip
+  script:
+    - docker run --name ${CI_PROJECT_NAME} -d -p 8080:8080 ${REMOTE_LATEST_IMAGE}
+    - while true; do wget --spider --timeout=1 --tries=1 http://docker:8080 >/dev/null 2>&1 && break; done
+    - ./nuclei -l urls.txt --severity critical -ud .nuclei-templates/ -as -ni
+  cache:
+    paths:
+      - .nuclei-templates/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: 
+        paths:
+          - app.py
+          - Dockerfile
+          - requirements.txt
+          - urls.txt
