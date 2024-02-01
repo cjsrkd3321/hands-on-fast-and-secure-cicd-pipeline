@@ -1,0 +1,31 @@
+include:
+  - project: "7424069/templates"
+    ref: "app_runner-python-pip-v1"
+    file: "service.yml"
+
+gitleaks:
+  extends: .gitleaks
+
+build-container-image:
+  before_script:
+    - !reference [.build-container-image, before_script]
+    - echo "test"
+  extends: .build-container-image
+
+semgrep:
+  extends: .semgrep
+
+trivy:
+  extends: .trivy
+
+nuclei:
+  extends: .nuclei
+
+sign-container-image:
+  extends: .sign-container-image
+
+verify-container-image:
+  extends: .verify-container-image
+
+deploy:
+  extends: .deploy

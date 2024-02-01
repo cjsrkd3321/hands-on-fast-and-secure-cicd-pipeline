@@ -1,0 +1,8 @@
+default:
+  image:
+    name: zricethezav/gitleaks:latest
+    entrypoint: [""]
+    
+job:
+  script:
+    - ls

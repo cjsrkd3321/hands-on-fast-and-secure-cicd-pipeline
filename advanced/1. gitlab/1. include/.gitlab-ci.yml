@@ -1,0 +1,4 @@
+include:
+  - project: "7424069/templates"
+    ref: main
+    file: ".gitlab-ci.yml"

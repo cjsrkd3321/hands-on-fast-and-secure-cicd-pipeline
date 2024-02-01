@@ -1,0 +1,18 @@
+default:
+  image:
+    name: zricethezav/gitleaks:latest
+    entrypoint: [""]
+
+job1:
+  script: ls
+
+job2:
+  extends: job1
+  script: env
+
+.ex_job:
+  script: id
+
+job3:
+  extends: .ex_job
+  script: echo "hello"
