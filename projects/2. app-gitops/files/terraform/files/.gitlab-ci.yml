@@ -54,7 +54,6 @@ build-container-image:
   services:
     - name: docker:dind
   before_script:
-    - *get_aws_role
     - *get_ecr_token
   script:
     - docker build -t ${IMAGE} .
