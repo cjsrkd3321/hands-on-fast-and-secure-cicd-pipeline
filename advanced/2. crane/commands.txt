@@ -1,0 +1,11 @@
+# crane 개요: https://github.com/google/go-containerregistry/tree/main/cmd/crane
+# crane 명령어 설명 모음: https://github.com/google/go-containerregistry/blob/main/cmd/crane/doc/crane.md
+# crane Recipes: https://github.com/google/go-containerregistry/blob/main/cmd/crane/recipes.md
+
+aws ecr get-login-password --region ap-northeast-2 | crane auth login --username AWS --password-stdin $(dirname ${AWS_ECR_REPO_URL})
+
+crane ls REPO_URI
+
+crane config IMAGE_URI | jq .
+
+crane digest IMAGE_URI
