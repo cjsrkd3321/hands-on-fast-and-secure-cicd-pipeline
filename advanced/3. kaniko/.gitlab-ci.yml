@@ -1,0 +1,27 @@
+.build-container-image:
+  stage: build
+  image: registry.gitlab.com/7424069/images:kaniko
+  before_script:
+    -  mkdir -p /kaniko/.docker
+    -  echo "{\"credsStore\":\"ecr-login\"}" > /kaniko/.docker/config.json
+    - *get_aws_role
+  script:
+    - >
+      /kaniko/executor 
+      --context "${CI_PROJECT_DIR}" 
+      --dockerfile "${CI_PROJECT_DIR}/Dockerfile" 
+      --destination "${REMOTE_REGULAR_IMAGE}"
+      --destination "${REMOTE_LATEST_IMAGE}"
+      --snapshot-mode=redo
+      --use-new-run
+      --single-snapshot
+      --cache=true 
+      --cache-repo "${AWS_ECR_REPO_URL}"
+      --compressed-caching=false
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: 
+        paths:
+          - app.py
+          - Dockerfile
+          - requirements.txt
