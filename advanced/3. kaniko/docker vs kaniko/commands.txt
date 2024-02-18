@@ -1,0 +1,20 @@
+[DOCKER]
+
+export DOCKER_BUILDKIT=0
+
+docker stats -a
+
+docker build . -t rex
+
+################################################################################
+[KANIKO]
+
+docker run -it --rm -v ~/.aws:/root/.aws registry.gitlab.com/7424069/images:kaniko
+
+/kaniko/executor --context . --dockerfile Dockerfile --no-push
+
+mkdir -p /kaniko/.docker
+
+echo "{\"credsStore\":\"ecr-login\"}" > /kaniko/.docker/config.json
+
+/kaniko/executor --context . --dockerfile Dockerfile --destination REMOTE_REGISTRY
