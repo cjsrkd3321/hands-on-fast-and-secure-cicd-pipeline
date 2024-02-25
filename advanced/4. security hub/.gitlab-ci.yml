@@ -1,0 +1,41 @@
+trivy:
+  stage: test
+  services:
+    - name: docker:dind
+  before_script:
+    - *get_ecr_token_using_docker
+    - export TRIVY_VERSION=$(wget -qO - "https://api.github.com/repos/aquasecurity/trivy/releases/latest" | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+    - wget --no-verbose https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz -O - | tar -zxvf -
+    - apk update && apk add jq
+  script:
+    - ./trivy image --download-db-only --no-progress --cache-dir .trivycache/
+    - ./trivy image --severity CRITICAL --exit-code 0 --cache-dir .trivycache/ --no-progress --format json -o result-image.json ${REMOTE_LATEST_IMAGE}
+    - ./trivy filesystem --scanners misconfig,vuln --exit-code 0 --cache-dir .trivycache/ --no-progress --format json -o result-fs.json .
+    # GitLab CodeQuality 형태로 파일 출력 및 병합
+    - ./trivy convert --format template --template "@contrib/gitlab-codequality.tpl" --output gq-image.json result-image.json
+    - ./trivy convert --format template --template "@contrib/gitlab-codequality.tpl" --output gq-fs.json result-fs.json
+    - jq -s 'add' gq-image.json gq-fs.json > gl-codequality.json
+    # ASFF 형태로 파일 출력 및 병합
+    - AWS_REGION=ap-northeast-2 AWS_ACCOUNT_ID=[YOUR_ACCOUNT_ID] ./trivy convert --format template --template "@contrib/asff.tpl" --output asff-image.json result-image.json
+    - AWS_REGION=ap-northeast-2 AWS_ACCOUNT_ID=[YOUR_ACCOUNT_ID] ./trivy convert --format template --template "@contrib/asff.tpl" --output asff-fs.json result-fs.json
+    # Findings 제거 후 병합
+    - jq '.Findings' asff-fs.json > asff-fs-r.json; jq '.Findings' asff-image.json > asff-image-r.json
+    - jq -s 'add' asff-image-r.json asff-fs-r.json > result.asff
+    # 결과를 AWS Security Hub로 통합
+    - aws securityhub batch-import-findings --findings file://result.asff
+    - ./trivy image --exit-code 1 --cache-dir .trivycache/ --severity CRITICAL --no-progress ${REMOTE_LATEST_IMAGE}
+  cache:
+    paths:
+      - .trivycache/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: 
+        paths:
+          - app.py
+          - Dockerfile
+          - requirements.txt
+  artifacts:
+    paths:
+      - gl-codequality.json
+    reports:
+      codequality: gl-codequality.json

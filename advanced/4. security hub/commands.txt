@@ -1,0 +1,33 @@
+##### 기존 방식 #####
+trivy image --format template --template "@gitlab-codequality.tpl" -o gl-codequality-image.json python:3.11.8
+
+trivy image --format template --template "@asff.tpl" -o asff-image.json python:3.11.8
+
+##### CRITICAL만 출력 #####
+trivy image --severity CRITICAL python:3.11.8
+
+##### json 형태로 결과 출력 #####
+trivy image --severity CRITICAL --format json -o result-image.json python:3.11.8
+
+trivy fs --scanners misconfig,vuln --format json --output result-fs.json .
+
+##### json을 cyclonedx 형태로 출력 #####
+trivy convert --format cyclonedx --output result.cdx result-image.json
+
+##### json을 ASFF 형태로 출력 #####
+AWS_REGION=ap-northeast-2 AWS_ACCOUNT_ID=[YOUR_ACCOUNT_ID] trivy convert --format template --template "@asff.tpl" --output result-image.asff result-image.json
+
+AWS_REGION=ap-northeast-2 AWS_ACCOUNT_ID=[YOUR_ACCOUNT_ID] trivy convert --format template --template "@asff.tpl" --output result-fs.asff result-fs.json
+
+##### json을 GitLab codequality 형태로 출력 #####
+trivy convert --format template --template "@gitlab-codequality.tpl" --output gq-image.json result-image.json
+
+trivy convert --format template --template "@gitlab-codequality.tpl" --output gq-fs.json result-fs.json
+
+##### jq를 활용해 파일 하나로 합치기 #####
+jq '.Findings' result-fs.asff > result-fs-r.asff; jq '.Findings' result-image.asff > result-image-r.asff
+
+jq -s 'add' result-fs-r.asff result-image-r.asff > result.asff
+
+##### ASFF 결과 업로드 #####
+aws securityhub batch-import-findings --findings file://result.asff
